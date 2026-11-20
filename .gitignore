@@ -1,0 +1,4 @@
+﻿server/token.txt
+__pycache__/
+server/certs/
+server/mouse_remoto.log
