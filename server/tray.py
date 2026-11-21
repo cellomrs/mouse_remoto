@@ -56,14 +56,25 @@ def _copy_to_clipboard(text: str) -> None:
 class QrWindow:
     """Janela com o QR Code. Roda o Tk numa thread própria; reabrir só a traz à frente."""
 
-    def __init__(self, get_url: Callable[[], str], https: bool) -> None:
+    ACCESS = "access"
+    SETUP = "setup"
+
+    def __init__(
+        self,
+        get_url: Callable[[], str],
+        get_setup_url: Callable[[], str] | None = None,
+    ) -> None:
         self._get_url = get_url
-        self._https = https
+        self._get_setup_url = get_setup_url  # None = sem página de certificado
+        self.mode = self.ACCESS
         self._thread: threading.Thread | None = None
         self._raise = False
         self._close = False
 
-    def open(self) -> None:
+    def open(self, mode: str = ACCESS) -> None:
+        if mode == self.SETUP and self._get_setup_url is None:
+            mode = self.ACCESS
+        self.mode = mode
         if self._thread and self._thread.is_alive():
             self._raise = True
             return
@@ -89,26 +100,55 @@ class QrWindow:
         except Exception:
             pass
 
-        tk.Label(root, text="Escaneie com a câmera do celular", fg="#e6e8ee", bg="#111318",
-                 font=("Segoe UI", 12, "bold")).pack()
+        title_label = tk.Label(root, fg="#e6e8ee", bg="#111318", font=("Segoe UI", 12, "bold"))
+        title_label.pack()
         qr_label = tk.Label(root, bg="#ffffff", bd=0)
         qr_label.pack(pady=12)
         url_label = tk.Label(root, fg="#e6e8ee", bg="#1b1e25", font=("Consolas", 10),
                              padx=10, pady=6, wraplength=520)
         url_label.pack()
-        hint = "O endereço contém a senha de acesso — não compartilhe."
-        if self._https:
-            hint += "\nPrimeira vez? No celular, toque em “Baixar certificado” e siga as instruções."
-        tk.Label(root, text=hint, fg="#8a90a0", bg="#111318", font=("Segoe UI", 9),
-                 justify="center").pack(pady=(10, 0))
+        hint_label = tk.Label(root, fg="#8a90a0", bg="#111318", font=("Segoe UI", 9),
+                              justify="center")
+        hint_label.pack(pady=(10, 0))
 
-        state = {"url": None, "img": None}
+        texts = {
+            self.ACCESS: (
+                "Escaneie com a câmera do celular",
+                "O endereço contém a senha de acesso — não compartilhe.",
+                "Instalar certificado no celular",
+            ),
+            self.SETUP: (
+                "Instalar o certificado (uma vez por celular)",
+                "Abra no celular, toque em “Baixar certificado” e siga os passos.\n"
+                "Se o Chrome avisar que o download não é seguro, toque em “Manter”.",
+                "Voltar ao QR de acesso",
+            ),
+        }
+
+        toggle_btn = None
+        if self._get_setup_url is not None:
+            def toggle() -> None:
+                self.mode = self.SETUP if self.mode == self.ACCESS else self.ACCESS
+                render()
+
+            toggle_btn = tk.Button(root, command=toggle, bg="#252933", fg="#e6e8ee",
+                                   activebackground="#5b8cff", activeforeground="#ffffff",
+                                   relief="flat", padx=12, pady=6, font=("Segoe UI", 10))
+            toggle_btn.pack(pady=(12, 0))
+
+        state = {"key": None, "img": None}
 
         def render() -> None:
-            url = self._get_url()
-            if url == state["url"]:
+            mode = self.mode
+            url = self._get_setup_url() if mode == self.SETUP else self._get_url()
+            if (mode, url) == state["key"]:
                 return
-            state["url"] = url
+            state["key"] = (mode, url)
+            title, hint, btn = texts[mode]
+            title_label.configure(text=title)
+            hint_label.configure(text=hint)
+            if toggle_btn is not None:
+                toggle_btn.configure(text=btn)
             img = qrcode.make(url, box_size=8, border=2).get_image().convert("RGB")
             state["img"] = ImageTk.PhotoImage(img)
             qr_label.configure(image=state["img"])
@@ -134,7 +174,8 @@ class QrWindow:
         import gc
 
         state.clear()
-        del render, poll, qr_label, url_label, root
+        texts.clear()
+        del render, poll, qr_label, url_label, title_label, hint_label, toggle_btn, root
         gc.collect()
 
 
@@ -171,10 +212,26 @@ def run(
         return
     print("servidor no ar:", settings.url.split("?")[0])
 
-    qr = QrWindow(lambda: settings.url, settings.https)
+    # Modo --https: página HTTP de instalação do certificado (opcional).
+    setup_server = None
+    if settings.https:
+        if port_in_use(settings.host, settings.setup_port):
+            print(f"porta {settings.setup_port} em uso: página do certificado desativada")
+        else:
+            setup_server = uvicorn.Server(settings.setup_uvicorn_config())
+            threading.Thread(target=setup_server.run, daemon=True).start()
+            print("página do certificado:", settings.setup_url)
+
+    qr = QrWindow(
+        lambda: settings.url,
+        (lambda: settings.setup_url) if setup_server is not None else None,
+    )
 
     def show_qr(icon, item) -> None:
         qr.open()
+
+    def show_setup_qr(icon, item) -> None:
+        qr.open(QrWindow.SETUP)
 
     def copy_url(icon, item) -> None:
         _copy_to_clipboard(settings.url)
@@ -203,10 +260,17 @@ def run(
     def quit_app(icon, item) -> None:
         qr.close()
         server.should_exit = True
+        if setup_server is not None:
+            setup_server.should_exit = True
         icon.stop()
 
     menu = pystray.Menu(
         pystray.MenuItem("Mostrar QR Code", show_qr, default=True),
+        pystray.MenuItem(
+            "Instalar certificado no celular",
+            show_setup_qr,
+            visible=setup_server is not None,
+        ),
         pystray.MenuItem("Copiar endereço", copy_url),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(
@@ -231,5 +295,7 @@ def run(
     icon.run(setup=setup)
 
     server.should_exit = True
+    if setup_server is not None:
+        setup_server.should_exit = True
     server_thread.join(timeout=5)
     print("encerrado")

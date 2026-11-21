@@ -105,6 +105,10 @@ Conexão: `ws(s)://<ip>:<porta>/ws?token=<token>`. Mensagens em JSON compacto.
 
 // Medição de latência (novo)
 { "type": "ping", "t": 12345.6 }
+
+// Apps do PC (PWAs do Chrome/Edge) (novo)
+{ "type": "get_apps" }
+{ "type": "launch_app", "app": "agimnkijcaahngcdmfeangaknmldooml", "monitor": "\\\\.\\DISPLAY2" }  // monitor opcional
 ```
 
 ### PC → Celular (novo)
@@ -116,8 +120,10 @@ Conexão: `ws(s)://<ip>:<porta>/ws?token=<token>`. Mensagens em JSON compacto.
 ] }
 { "type": "lock_state", "enabled": true, "monitor": "\\\\.\\DISPLAY1" }
 { "type": "pong", "t": 12345.6 }
+{ "type": "apps", "list": [ { "id": "agimnkijcaahngcdmfeangaknmldooml", "name": "YouTube", "icon": "data:image/png;base64,…" } ] }
+{ "type": "app_launched", "app": "agimnkijcaahngcdmfeangaknmldooml", "ok": true, "placed": true }
 ```
-Ao conectar, o servidor envia `hello`, `monitors` e `lock_state`. `monitors` é reenviado sempre que a configuração de telas muda.
+Ao conectar, o servidor envia `hello`, `monitors`, `lock_state` e `apps`. `monitors` é reenviado sempre que a configuração de telas muda.
 
 ### Códigos de fechamento
 | Código | Significado | Comportamento do app |
@@ -144,6 +150,7 @@ mouse_remoto/
 │   ├── main.py              # Ponto de entrada: argumentos, FastAPI, WebSocket, token
 │   ├── input_controller.py  # pynput: movimento/rolagem fracionários, cliques, teclado, mídia, DPI
 │   ├── monitor_manager.py   # screeninfo: lista, centro, clamp da trava
+│   ├── apps.py              # PWAs instalados: leitura de .lnk, ícones, abrir e maximizar na tela
 │   ├── certs.py             # CA local + certificado do servidor (--https)
 │   ├── tray.py              # Ícone na bandeja + janela do QR Code
 │   ├── autostart.py         # Iniciar com o Windows (registro HKCU\...\Run)
@@ -157,6 +164,7 @@ mouse_remoto/
 │   ├── app.js               # Gestos, WebSocket, reconexão, telas, teclado, SW
 │   ├── manifest.json
 │   ├── sw.js
+│   ├── setup.html           # Página de instalação do certificado (servidor HTTP porta+1)
 │   └── icons/               # icon-192, icon-512, icon-maskable-512, apple-touch-icon
 ├── tools/
 │   └── make_icons.py        # Regenera os ícones (Pillow)
@@ -185,6 +193,14 @@ Parâmetros (em `web/app.js`): toque ≤ 250 ms e ≤ 8 px; janela de arraste 30
 * Status (`Conectado` / `Reconectando…` / `Acesso negado`) e latência em ms.
 * Sensibilidade (0,5 a 4; salva no celular).
 * Tela cheia (Fullscreen API; oculto onde não há suporte, como no iPhone).
+
+### Apps do PC (botão ▦ na barra superior) (novo)
+* Painel em tela cheia com a grade dos PWAs instalados no PC (ícone + nome). Ao abrir, pede `get_apps` para atualizar a lista.
+* **Toque:** `launch_app` para a tela selecionada na barra de telas; o status mostra "Abrindo <app>…" até chegar `app_launched`. **Segurar:** renomear (salvo no celular).
+* **Descoberta** (`server/apps.py`): atalhos `.lnk` do menu Iniciar (usuário e todos os usuários) cujos argumentos contêm `--app-id=` (Chrome e Edge instalam PWAs assim, via `chrome_proxy.exe`/`msedge_proxy.exe`). O `.lnk` é lido em Python puro (formato MS-SHLLINK), sem `pywin32`. O ícone `.ico` vira PNG de 96 px (Pillow), com cache.
+* **Posicionamento:** antes de abrir, o servidor guarda as janelas do Chrome/Edge visíveis; depois espera **até 20 s** por uma janela nova (ou por uma janela do navegador que passe a ficar em primeiro plano). Encontrada, ela é restaurada, movida para o monitor de destino e maximizada (`SetWindowPos` + `ShowWindow`), e o cursor vai para o centro desse monitor. Monitor de destino: o pedido → a tela travada → a tela onde está o cursor.
+* **Medido:** o Chrome leva de ~5 s a ~9 s para mostrar a janela de um PWA neste PC. Uma versão anterior, com 8 s de limite e uma busca pelo título como último recurso, chegou a mover a janela errada; a busca pelo título foi removida: sem uma janela identificada com certeza, nada é movido (`placed: false`).
+* Chamar o mesmo app de novo abre **outra** janela (comportamento do Chrome para esses PWAs).
 
 ### Barra de telas (só aparece com 2+ monitores)
 * `[Tela 1] [Tela 2] … [🔓 Travar]` — ver seção 2.
@@ -225,6 +241,7 @@ pythonw server/main.py --tray --https
 
 ### Menu da bandeja
 * **Mostrar QR Code** (também com clique no ícone) — atualiza sozinho se o IP ou o token mudarem.
+* **Instalar certificado no celular** (só com `--https`) — mesma janela, com o QR da página de instalação; um botão alterna entre os dois QR Codes.
 * **Copiar endereço**.
 * **Iniciar com o Windows** — liga/desliga; grava os argumentos atuais. Usa `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (não exige administrador).
 * **Gerar novo token…** — com confirmação; derruba os celulares conectados.
@@ -233,11 +250,20 @@ pythonw server/main.py --tray --https
 Se a porta já estiver em uso (ex.: instância iniciada pelo autostart), o programa avisa em vez de falhar.
 
 ### Primeira configuração do HTTPS (uma vez por celular)
-1. Abrir o endereço do QR Code e aceitar o aviso de segurança.
-2. Tocar em **Baixar certificado** na faixa amarela e instalar:
+**(revisado)** No modo `--https` o servidor também sobe um **servidor HTTP de configuração** na porta `porta+1` (padrão 8001), que serve apenas:
+* `GET /` → `web/setup.html`: instruções em 3 passos (baixar, instalar, abrir o controle);
+* `GET /ca.crt` → certificado público da CA.
+
+Ele não serve o PWA, o WebSocket nem o token. Se a porta estiver ocupada, o servidor principal sobe mesmo assim, só sem a página de configuração.
+
+**Motivo:** o Chrome no Android **bloqueia downloads em páginas com erro de certificado**, e a página HTTPS tem esse erro até a CA ser instalada (problema encontrado no teste real). Também não dá para linkar um download `http://` a partir da página `https://`, porque o Chrome bloqueia downloads inseguros vindos de página segura. Por isso a faixa amarela do app **navega** até a página HTTP, e o download acontece lá. No máximo, o Chrome mostra o aviso "download não seguro", com a opção **Manter**.
+
+Fluxo:
+1. Abrir `http://<ip>:8001`: pelo primeiro QR Code do terminal, pelo menu da bandeja **Instalar certificado no celular** (a janela do QR alterna entre os dois QR Codes) ou pela faixa amarela do app.
+2. **Baixar certificado** e instalar:
    * **Android:** Configurações › Segurança › Mais configurações › Criptografia e credenciais › Instalar um certificado › Certificado de CA.
    * **iPhone:** Ajustes › Perfil Baixado › Instalar; depois Ajustes › Geral › Sobre › Ajustes de Confiança de Certificados › ativar "Mouse Remoto CA".
-3. Reabrir o navegador e usar **Adicionar à tela inicial**.
+3. Reabrir o navegador, tocar em **Abrir o Mouse Remoto** (`https://<ip>:8000/`) e usar **Adicionar à tela inicial**. O token já está salvo no `localStorage` da origem HTTPS desde a primeira leitura do QR.
 
 ---
 
@@ -262,6 +288,7 @@ Se a porta já estiver em uso (ex.: instância iniciada pelo autostart), o progr
 
 * **Token de acesso:** 96 bits aleatórios (`secrets.token_urlsafe(12)`), salvo em `server/token.txt`, comparado em tempo constante. Vai no QR Code; no celular, fica no `localStorage` e é removido da barra de endereço.
 * **Origin:** conexões WebSocket vindas de páginas de outros sites são recusadas (impede que um site aberto no celular controle o PC).
+* **Abrir apps — lista fechada:** o celular envia só o `app-id`; o servidor abre apenas atalhos da lista que ele mesmo descobriu no menu Iniciar. Nenhum caminho, comando ou argumento vem do celular (testado: um caminho de executável no lugar do id é recusado com `ok: false`).
 * **Troca de token:** pelo menu da bandeja ou `--new-token`; celulares com o token antigo são desconectados com `4401`.
 * **CA local restrita (Name Constraints):** a CA só pode emitir certificados para `localhost`, o nome deste PC e IPs privados (`10/8`, `172.16/12`, `192.168/16`, `127/8`). Mesmo que `server/certs/ca.key` vaze, não serve para falsificar sites da internet no celular. Testado: um certificado para `www.google.com` assinado pela CA é rejeitado.
 * **Certificado do servidor:** validade de 397 dias (limite do Safari/Chrome: 398); reemitido automaticamente quando o IP muda ou faltam 30 dias para vencer — sem reinstalar nada no celular.
@@ -273,6 +300,8 @@ Se a porta já estiver em uso (ex.: instância iniciada pelo autostart), o progr
 ## 11. Pontos de Atenção Técnicos
 
 * **HTTPS é obrigatório para Service Worker e Wake Lock (revisado).** Esses recursos só funcionam em contexto seguro; `http://192.168.x.x` não é. Sem `--https` o app funciona, mas não instala como app *standalone* e a tela do celular pode apagar (o botão de tela cheia continua disponível).
+* **Download do certificado (revisado):** precisa ser feito pela página HTTP de configuração (`porta+1`), não pela página HTTPS. Ver seção 8.
+* **Barra de telas oculta:** com só um monitor ativo (ex.: TV desligada), a barra de seleção de telas some de propósito e volta sozinha quando o segundo monitor reaparece (em até 3 s).
 * **iPhone — armazenamento separado:** o app instalado na tela inicial não compartilha o `localStorage` com o Safari. Na primeira abertura do app instalado, colar o endereço/token no campo exibido.
 * **Windows — Firewall:** liberar na **Rede Privada**. Atenção: `pythonw.exe` (modo bandeja) é um executável diferente de `python.exe` e pede permissão separada.
 * **Windows — janelas elevadas (UIPI):** sem privilégio de administrador, não é possível controlar janelas de programas elevados (Gerenciador de Tarefas, instaladores), a tela de UAC nem a tela de bloqueio.
@@ -284,12 +313,12 @@ Se a porta já estiver em uso (ex.: instância iniciada pelo autostart), o progr
 
 ## 12. Pendências e Próximos Passos
 
-### Não testado em aparelho real
-* Instalação do certificado e do app (Android e iPhone).
-* Teclado com Gboard e com o teclado do iPhone.
-* Envio real de teclas/mídia ao Windows (testado com teclado simulado).
-* Trava de tela ao desligar a TV fisicamente.
-* Autostart após reiniciar o Windows; cliques no menu da bandeja.
+### Testado em aparelho real (Android/Chrome)
+* Touchpad, gestos e cliques; teclado do celular; TV desligada (barra de telas some e a trava é solta); início com o Windows.
+
+### Ainda não testado em aparelho real
+* Instalação do certificado pela página HTTP de configuração e instalação como app (a primeira tentativa, pela página HTTPS, foi bloqueada pelo Chrome e motivou a página HTTP).
+* iPhone (Safari, certificado, teclado).
 
 ### Ideias futuras
 * Clique do meio e rolagem horizontal dedicada.

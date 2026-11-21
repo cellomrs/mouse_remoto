@@ -16,6 +16,7 @@
 - **Touchpad** com aceleração: movimentos lentos para precisão, rápidos para atravessar a tela.
 - **Gestos:** toque = clique, dois dedos = clique direito e rolagem, toque + arrastar = segurar clique.
 - **Vários monitores:** botões para levar o cursor direto para a TV e **trava** para ele não fugir para o monitor da mesa.
+- **Apps do PC:** abra os apps web instalados no PC (YouTube, Disney+, Prime Video…) direto na TV, já maximizados.
 - **Mídia e teclado:** play/pause, volume, Espaço/F para players web e o teclado do celular para digitar no PC.
 - **Instala como app** no Android e iPhone, com tela sempre ligada (modo HTTPS).
 - **Ícone na bandeja** com QR Code e opção de **iniciar com o Windows**.
@@ -56,13 +57,19 @@ Para adicionar à tela inicial do celular e impedir que a tela apague, o navegad
 python server/main.py --https
 ```
 
-Na primeira vez em cada celular:
+Na primeira vez em cada celular, instale o certificado. No modo `--https`, o servidor também abre uma **página de instalação em HTTP** na porta seguinte (`http://<ip-do-pc>:8001`):
 
-1. Escaneie o QR Code e aceite o aviso de segurança.
-2. Toque em **Baixar certificado** na faixa amarela e instale:
+1. Abra a página de instalação de um destes jeitos:
+   - escaneie o **primeiro QR Code** do terminal ("Primeira vez neste celular?");
+   - na bandeja, use **Instalar certificado no celular**;
+   - no app, toque em **Instalar certificado** na faixa amarela.
+2. Toque em **Baixar certificado**. Se o Chrome avisar que o download não é seguro, toque em **Manter**.
+3. Instale seguindo os passos da página:
    - **Android:** Configurações › Segurança › Mais configurações › Criptografia e credenciais › Instalar um certificado › Certificado de CA.
    - **iPhone:** Ajustes › Perfil Baixado › Instalar. Depois: Ajustes › Geral › Sobre › Ajustes de Confiança de Certificados › ative **Mouse Remoto CA**.
-3. Reabra o navegador, acesse o endereço e use **Adicionar à tela inicial**.
+4. Reabra o navegador, toque em **Abrir o Mouse Remoto** e use **Adicionar à tela inicial**.
+
+> Por que uma página HTTP separada? O Chrome bloqueia downloads em páginas com erro de certificado, e a página HTTPS tem esse erro até o certificado ser instalado. A página HTTP só oferece o certificado público e as instruções: ela não contém o token nem controla o PC.
 
 O certificado é de uma autoridade criada no seu PC e **só vale para a rede local**: ela não consegue emitir certificados para sites da internet (veja [Segurança](#segurança)).
 
@@ -79,18 +86,19 @@ Roda sem janela de terminal. Clique no ícone da bandeja para ver o QR Code. Pel
 | Opção | O que faz |
 |---|---|
 | Mostrar QR Code | Janela com o QR Code e o endereço |
+| Instalar certificado no celular | QR Code da página de instalação do certificado (só com `--https`) |
 | Copiar endereço | Copia a URL de acesso |
 | Iniciar com o Windows | Liga/desliga a inicialização automática com as opções atuais |
 | Gerar novo token… | Troca a senha de acesso e desconecta os celulares conectados |
 | Sair | Encerra o servidor |
 
-> O `pythonw.exe` é tratado pelo Firewall como um programa diferente do `python.exe`: permita-o também na **Rede Privada**.
+> O `pythonw.exe` é tratado pelo Firewall como um programa diferente do `python.exe`: permita-o também na **Rede Privada**. A permissão vale para as duas portas (8000 e 8001).
 
 ### Opções
 
 | Opção | Descrição |
 |---|---|
-| `--https` | Serve via HTTPS (instalar como app, tela sempre ligada) |
+| `--https` | Serve via HTTPS (instalar como app, tela sempre ligada) e abre a página de instalação do certificado em HTTP na porta seguinte |
 | `--tray` | Segundo plano com ícone na bandeja |
 | `--port N` | Porta (padrão `8000`) |
 | `--host H` | Interface de rede (padrão `0.0.0.0`) |
@@ -109,6 +117,7 @@ Roda sem janela de terminal. Clique no ícone da bandeja para ver o QR Code. Pel
 
 | Botões | |
 |---|---|
+| **▦ Apps** | Lista os apps web instalados no PC. Toque para abrir na tela selecionada (maximizado, com o cursor junto); **segure** para renomear |
 | **Tela 1 / Tela 2** | Leva o cursor ao centro da tela. **Segure** para renomear (ex.: "TV") |
 | **🔓 Travar** | Prende o cursor na tela selecionada |
 | **Esc · Espaço · F** | Teclas comuns. Espaço e F controlam YouTube/Netflix (play e tela cheia) |
@@ -117,11 +126,18 @@ Roda sem janela de terminal. Clique no ícone da bandeja para ver o QR Code. Pel
 | **Esquerdo · Direito** | Botões do mouse. Segure para manter pressionado |
 | **Sens.** | Sensibilidade do cursor |
 
+## Apps do PC
+
+O botão **▦** lista os **apps web (PWAs) instalados no Chrome ou no Edge** do PC, detectados pelos atalhos do menu Iniciar. Para adicionar um app, abra o site no Chrome do PC e use **⋮ › Transmitir, salvar e compartilhar › Instalar página como app**. Ele aparece na lista na próxima vez que o painel for aberto.
+
+Ao tocar num app, ele abre **na tela selecionada na barra de telas** (ou na tela travada, ou onde o cursor estiver), já maximizado, e o cursor vai junto. O Chrome leva alguns segundos para abrir a janela; enquanto isso, o status mostra "Abrindo…". Programas comuns (não-PWA) não aparecem na lista.
+
 ## Segurança
 
 - O endereço do QR Code contém um **token de acesso** aleatório. Sem ele, ninguém na rede consegue conectar. Não compartilhe o QR Code.
 - Para revogar o acesso, use **Gerar novo token…** na bandeja ou `--new-token`.
 - Páginas de outros sites abertas no celular não conseguem se conectar ao servidor.
+- O celular só consegue abrir os apps da lista detectada no PC: ele envia apenas o identificador do app, nunca um caminho ou comando.
 - A autoridade certificadora do modo HTTPS é restrita a `localhost`, ao nome do PC e a IPs de rede privada. Mesmo que a chave vaze, ela não serve para falsificar sites da internet no celular.
 - No modo HTTP o token trafega sem criptografia na rede local. Em redes que não são suas, prefira `--https`.
 - Ficam fora do Git: `server/token.txt`, `server/certs/` e `server/mouse_remoto.log`.
@@ -134,6 +150,8 @@ Roda sem janela de terminal. Clique no ícone da bandeja para ver o QR Code. Pel
 | "Token inválido" | O token foi trocado. Escaneie o QR Code atual |
 | "A porta 8000 já está em uso" | O servidor já está rodando (procure o ícone na bandeja) ou use `--port` |
 | Não aparece "Adicionar à tela inicial" / tela apaga | Use `--https` e instale o certificado |
+| Download do certificado bloqueado | Baixe pela página HTTP (`http://<ip>:8001`), não pela página HTTPS. Se o Chrome avisar, toque em **Manter** |
+| A barra de telas sumiu | Normal com só um monitor ligado (ex.: TV desligada): ela só aparece com 2 ou mais |
 | Não controla o Gerenciador de Tarefas ou instaladores | Limite do Windows para janelas de administrador. Rode o servidor como administrador se precisar |
 | Linux com Wayland não move o cursor | O Wayland bloqueia injeção de input. Use uma sessão X11 |
 

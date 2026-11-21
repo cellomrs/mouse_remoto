@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, Response  # noqa: E402
 from pynput.keyboard import Controller as KeyboardController  # noqa: E402
 from pynput.mouse import Controller  # noqa: E402
 
+import apps as pwa  # noqa: E402
 import monitor_manager as mm  # noqa: E402
 from input_controller import InputSession  # noqa: E402
 
@@ -41,7 +42,12 @@ MONITOR_POLL_S = 3  # intervalo para detectar TV ligada/desligada
 
 mouse = Controller()
 keyboard = KeyboardController()
-app = FastAPI()
+# Sem /docs, /redoc e /openapi.json: nada além do PWA e do WebSocket fica exposto.
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+# Modo --https: servidor HTTP de configuração (porta+1) só com a página de instalação
+# e o certificado público da CA. O Chrome bloqueia downloads em páginas com erro de
+# certificado, então o certificado precisa ser baixado por HTTP. Não expõe o token.
+setup_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 TOKEN = ""
 ACTIVE: set[WebSocket] = set()             # conexões autenticadas
 SERVER_LOOP: asyncio.AbstractEventLoop | None = None
@@ -162,10 +168,41 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 if had_lock:
                     await send_lock_state()
 
+    installed_apps: list[pwa.App] = []
+
+    async def send_apps() -> None:
+        nonlocal installed_apps
+        installed_apps = await asyncio.to_thread(pwa.list_pwas)
+        payload = await asyncio.to_thread(lambda: [a.payload() for a in installed_apps])
+        await send({"type": "apps", "list": payload})
+
+    async def launch_app(app_id, monitor_id) -> None:
+        # Só abre apps da lista descoberta no PC — o celular manda apenas o id.
+        app_ = next((a for a in installed_apps if a.id == app_id), None)
+        if app_ is None:
+            await send({"type": "app_launched", "app": app_id, "ok": False, "placed": False})
+            return
+        if refresh_monitors():
+            await send_monitors()
+        target = (
+            mm.find(monitors, monitor_id)
+            or session.lock
+            or mm.monitor_at(monitors, *session.position)
+        )
+        rect = (target.x, target.y, target.w, target.h) if target else None
+        result = await asyncio.to_thread(pwa.launch, app_, rect)
+        if result.get("placed") and target is not None:
+            session.teleport(*target.center)
+        print(f"[app] {app_.name}: {result}")
+        await send({"type": "app_launched", "app": app_id,
+                    "ok": result["ok"], "placed": result["placed"]})
+
     await send({"type": "hello"})
     await send_monitors()
     await send_lock_state()
+    await send_apps()
     watcher = asyncio.create_task(watch_monitors())
+    launches: set[asyncio.Task] = set()
 
     try:
         while True:
@@ -194,6 +231,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
                 value = msg.get("value")
                 if isinstance(value, str):
                     session.text(value)
+            elif kind == "get_apps":
+                await send_apps()
+            elif kind == "launch_app":
+                # Em segundo plano: esperar a janela abrir leva alguns segundos e o
+                # touchpad precisa continuar respondendo.
+                task = asyncio.create_task(launch_app(msg.get("app"), msg.get("monitor")))
+                launches.add(task)
+                task.add_done_callback(launches.discard)
             elif kind == "get_monitors":
                 refresh_monitors()
                 await send_monitors()
@@ -225,12 +270,26 @@ async def ws_endpoint(ws: WebSocket) -> None:
     finally:
         ACTIVE.discard(ws)
         watcher.cancel()
+        for task in launches:
+            task.cancel()
         session.release_all()
         print(f"[-] desconectado: {client}")
 
 
-@app.get("/ca.crt")
-async def ca_cert() -> Response:
+@app.middleware("http")
+async def no_cache(request, call_next):
+    """Força o navegador a revalidar os arquivos do PWA a cada carregamento.
+
+    Sem Cache-Control, o navegador aplica cache "heurístico" e pode continuar usando
+    um app.js antigo junto com um index.html novo (ex.: botão novo sem o código dele).
+    Na rede local a revalidação custa um 304 (ETag), praticamente nada.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
+def _ca_response() -> Response:
     """Certificado público da CA local, para instalar no celular (modo --https)."""
     import certs
 
@@ -243,12 +302,27 @@ async def ca_cert() -> Response:
     )
 
 
+@app.get("/ca.crt")
+async def ca_cert() -> Response:
+    return _ca_response()
+
+
+@setup_app.get("/ca.crt")
+async def setup_ca_cert() -> Response:
+    return _ca_response()
+
+
+@setup_app.get("/")
+async def setup_page() -> Response:
+    return FileResponse(WEB_DIR / "setup.html", headers={"Cache-Control": "no-store"})
+
+
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
 
 
-def print_banner(url: str) -> None:
-    print("\n  Mouse Remoto rodando")
-    print(f"  Abra no celular: {url}\n")
+def print_banner(url: str, title: str = "Mouse Remoto rodando — abra no celular:") -> None:
+    print(f"\n  {title}")
+    print(f"  {url}\n")
     try:
         import qrcode
 
@@ -258,7 +332,6 @@ def print_banner(url: str) -> None:
         qr.print_ascii(invert=True)
     except Exception as exc:  # QR é só conveniência
         print(f"  (não foi possível gerar o QR Code: {exc})")
-    print("  Se o celular não conectar, libere o Python no Firewall do Windows (Rede Privada).\n")
 
 
 class Settings:
@@ -292,6 +365,18 @@ class Settings:
             app, host=self.host, port=self.port, log_level="warning",
             ws_ping_interval=10, **self.ssl,
         )
+
+    @property
+    def setup_port(self) -> int:
+        return self.port + 1
+
+    @property
+    def setup_url(self) -> str:
+        """Página HTTP de instalação do certificado (só no modo --https). Sem token."""
+        return f"http://{lan_ip()}:{self.setup_port}/"
+
+    def setup_uvicorn_config(self) -> uvicorn.Config:
+        return uvicorn.Config(setup_app, host=self.host, port=self.setup_port, log_level="warning")
 
     def startup_args(self) -> list[str]:
         """Argumentos para repetir esta configuração ao iniciar com o Windows."""
@@ -347,18 +432,35 @@ def main() -> None:
         raise SystemExit(1)
 
     settings.prepare()
+    servers = [uvicorn.Server(settings.uvicorn_config())]
     if settings.https:
         import certs
 
         if settings.ca_created:
             print("\n  Certificado da CA criado em", certs.CA_CRT)
-        print(
-            "\n  HTTPS: instale o certificado da CA no celular UMA vez. Abra o endereço abaixo,"
-            "\n  aceite o aviso de segurança e toque em 'Baixar certificado' (instruções na tela)."
-        )
+        if port_in_use(settings.host, settings.setup_port):
+            print(f"\n  Aviso: porta {settings.setup_port} em uso — página de instalação do"
+                  " certificado desativada.")
+        else:
+            servers.append(uvicorn.Server(settings.setup_uvicorn_config()))
+            print_banner(
+                settings.setup_url,
+                "PRIMEIRA VEZ NESTE CELULAR? Instale o certificado (uma vez só):",
+            )
 
     print_banner(settings.url)
-    uvicorn.Server(settings.uvicorn_config()).run()
+    print("  Se o celular não conectar, libere o Python no Firewall do Windows (Rede Privada).\n")
+    asyncio.run(serve_all(servers))
+
+
+async def serve_all(servers: list[uvicorn.Server]) -> None:
+    """Roda vários servidores; quando um termina (ex.: Ctrl+C), encerra os outros."""
+    tasks = [asyncio.create_task(s.serve()) for s in servers]
+    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for s in servers:
+        s.should_exit = True
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 if __name__ == "__main__":

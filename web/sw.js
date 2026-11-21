@@ -2,7 +2,7 @@
 // Estratégia "rede primeiro": o app sempre pega a versão mais nova do PC;
 // o cache só serve para abrir a tela mesmo com o servidor desligado
 // (o app então fica em "Reconectando…" até o PC voltar).
-const CACHE = "mouse-remoto-v1";
+const CACHE = "mouse-remoto-v3";
 const SHELL = [
   "/", "/index.html", "/styles.css", "/app.js", "/manifest.json",
   "/icons/icon-192.png", "/icons/icon-512.png",
@@ -26,7 +26,8 @@ self.addEventListener("fetch", (e) => {
   if (url.pathname === "/ws" || url.pathname === "/ca.crt") return;
 
   e.respondWith(
-    fetch(e.request)
+    // "no-cache": sempre revalida com o PC (nunca usa uma cópia antiga do cache HTTP).
+    fetch(e.request, { cache: "no-cache" })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();

@@ -108,6 +108,11 @@ function connect() {
       renderScreens();
     } else if (msg.type === "lock_state") {
       onLockState(msg);
+    } else if (msg.type === "apps" && Array.isArray(msg.list)) {
+      installedApps = msg.list;
+      renderApps();
+    } else if (msg.type === "app_launched") {
+      onAppLaunched(msg);
     }
   };
 
@@ -485,6 +490,105 @@ function onLockState(msg) {
   renderScreens();
 }
 
+// ---------- Apps do PC (PWAs instalados) ----------
+const appsPanel = $("apps-panel");
+const appsGrid = $("apps-grid");
+const appsEmpty = $("apps-empty");
+const appsTarget = $("apps-target");
+
+let installedApps = [];
+let appNames = (() => {
+  try { return JSON.parse(store("appNames") || "{}"); } catch { return {}; }
+})();
+let launching = null;        // nome do app sendo aberto
+let launchTimer = null;
+
+function appLabel(a) {
+  return appNames[a.id] || a.name;
+}
+
+function targetMonitor() {
+  // Tela selecionada na barra de telas (se ainda existir); senão o servidor decide.
+  return monitors.some((m) => m.id === selected) ? selected : undefined;
+}
+
+function renderApps() {
+  appsGrid.replaceChildren();
+  appsEmpty.hidden = installedApps.length > 0;
+  for (const a of installedApps) {
+    const tile = document.createElement("button");
+    tile.className = "app-tile";
+    if (a.icon) {
+      const img = document.createElement("img");
+      img.src = a.icon;
+      img.alt = "";
+      tile.append(img);
+    } else {
+      const fb = document.createElement("div");
+      fb.className = "app-fallback";
+      fb.textContent = appLabel(a).charAt(0).toUpperCase();
+      tile.append(fb);
+    }
+    const name = document.createElement("span");
+    name.textContent = appLabel(a);
+    tile.append(name);
+    tile.title = a.name;
+    attachPress(tile, () => launchApp(a), () => renameApp(a));
+    appsGrid.append(tile);
+  }
+  const i = monitors.findIndex((m) => m.id === targetMonitor());
+  appsTarget.textContent = i >= 0 ? `→ ${labelFor(monitors[i], i)}` : "";
+}
+
+function openApps() {
+  appsPanel.hidden = false;
+  send({ type: "get_apps" });   // relê a lista (apps instalados/removidos no PC)
+  renderApps();
+}
+
+function closeApps() {
+  appsPanel.hidden = true;
+}
+
+function launchApp(a) {
+  send({ type: "launch_app", app: a.id, monitor: targetMonitor() });
+  haptic(20);
+  closeApps();
+  launching = appLabel(a);
+  statusText.textContent = `Abrindo ${launching}…`;
+  clearTimeout(launchTimer);
+  // O Chrome pode levar alguns segundos; o servidor espera até 20 s pela janela.
+  launchTimer = setTimeout(endLaunch, 25000);
+}
+
+function endLaunch(message) {
+  clearTimeout(launchTimer);
+  launching = null;
+  if (ws && ws.readyState === WebSocket.OPEN) statusText.textContent = message || "Conectado";
+  if (message) launchTimer = setTimeout(() => endLaunch(), 3000);
+}
+
+function onAppLaunched(msg) {
+  if (!msg.ok) {
+    haptic([40, 60, 40]);
+    endLaunch("Não foi possível abrir");
+  } else {
+    endLaunch();
+  }
+}
+
+function renameApp(a) {
+  const name = prompt(`Nome para "${a.name}":`, appLabel(a));
+  if (name === null) return;
+  if (name.trim()) appNames[a.id] = name.trim().slice(0, 24);
+  else delete appNames[a.id];
+  store("appNames", JSON.stringify(appNames));
+  renderApps();
+}
+
+$("apps-btn").addEventListener("click", openApps);
+$("apps-close").addEventListener("click", closeApps);
+
 // ---------- Tela cheia e Wake Lock ----------
 const fsBtn = $("fullscreen");
 if (!document.documentElement.requestFullscreen) {
@@ -518,14 +622,16 @@ $("cert-close").addEventListener("click", () => {
   certBanner.hidden = true;
   store("certBannerHidden", "1");
 });
+// A instalação acontece numa página HTTP na porta seguinte (porta+1): o Chrome
+// bloqueia downloads em páginas com erro de certificado, como esta antes da instalação.
+const setupUrl = `http://${location.hostname}:${Number(location.port || 443) + 1}/`;
+$("cert-link").href = setupUrl;
 $("cert-help").addEventListener("click", () => {
   alert(
-    "1. Toque em \"Baixar certificado\".\n\n" +
-    "ANDROID: Configurações > Segurança > Mais configurações > Criptografia e credenciais > " +
-    "Instalar um certificado > Certificado de CA > escolha mouse-remoto-ca.crt.\n\n" +
-    "IPHONE: Ajustes > Perfil Baixado > Instalar. Depois: Ajustes > Geral > Sobre > " +
-    "Ajustes de Confiança de Certificados > ative \"Mouse Remoto CA\".\n\n" +
-    "2. Feche e abra o navegador de novo, acesse o endereço e use \"Adicionar à tela inicial\"."
+    "Toque em \"Instalar certificado\": abre uma página com o download e o passo a passo " +
+    "para Android e iPhone.\n\n" +
+    "Também dá para escanear o QR \"Instalar certificado no celular\" no ícone do Mouse Remoto " +
+    "na bandeja do PC, ou abrir " + setupUrl
   );
 });
 

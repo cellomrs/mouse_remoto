@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111318">
+  <title>Instalar certificado</title>
+  <style>
+    :root {
+      --bg: #111318; --surface: #1b1e25; --border: #2a2e38;
+      --text: #e6e8ee; --muted: #8a90a0; --accent: #5b8cff; --warn: #f5b94a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 560px; margin: 0 auto;
+      padding: max(20px, env(safe-area-inset-top)) 16px max(32px, env(safe-area-inset-bottom)); }
+    h1 { font-size: 22px; margin: 4px 0 6px; }
+    .lead { color: var(--muted); margin: 0 0 20px; font-size: 15px; }
+    .step { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      padding: 16px; margin-bottom: 14px; }
+    .step h2 { font-size: 17px; margin: 0 0 10px; display: flex; gap: 10px; align-items: center; }
+    .num { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent);
+      color: #fff; display: grid; place-items: center; font-size: 14px; font-weight: 700; }
+    .btn { display: block; text-align: center; text-decoration: none; font-weight: 600;
+      color: #fff; background: var(--accent); border-radius: 12px; padding: 14px; font-size: 17px; }
+    .btn.secondary { background: #252933; border: 1px solid var(--border); }
+    .note { margin: 10px 0 0; font-size: 14px; color: var(--warn); }
+    details { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+    details:first-of-type { border-top: 0; margin-top: 0; padding-top: 0; }
+    summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+    ol { margin: 8px 0 4px; padding-left: 22px; }
+    li { margin: 4px 0; }
+    b { color: #fff; }
+    .muted { color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Instalar o certificado</h1>
+  <p class="lead">
+    Necessário uma vez por celular, para o Mouse Remoto funcionar como app e manter a tela ligada.
+    O certificado foi criado no seu PC e só vale para a sua rede local.
+  </p>
+
+  <section class="step">
+    <h2><span class="num">1</span> Baixar</h2>
+    <a class="btn" href="/ca.crt">Baixar certificado</a>
+    <p class="note">Se o Chrome avisar que o download não é seguro, toque em <b>Manter</b>
+      (ou <b>Baixar mesmo assim</b>).</p>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">2</span> Instalar</h2>
+    <details id="android" open>
+      <summary>Android</summary>
+      <ol>
+        <li>Abra <b>Configurações</b> › <b>Segurança</b> (ou <b>Segurança e privacidade</b>).</li>
+        <li><b>Mais configurações</b> › <b>Criptografia e credenciais</b>
+          › <b>Instalar um certificado</b> › <b>Certificado de CA</b>.</li>
+        <li>Confirme o aviso e escolha <b>mouse-remoto-ca.crt</b> em Downloads.</li>
+      </ol>
+      <p class="muted">Dica: se não achar o menu, busque por “certificado” nas Configurações.
+        Em alguns aparelhos, o caminho é <b>Biometria e segurança</b> › <b>Outras configurações de segurança</b>.</p>
+    </details>
+    <details id="ios">
+      <summary>iPhone / iPad</summary>
+      <ol>
+        <li>Abra <b>Ajustes</b> › <b>Perfil Baixado</b> › <b>Instalar</b>.</li>
+        <li>Depois: <b>Ajustes</b> › <b>Geral</b> › <b>Sobre</b>
+          › <b>Ajustes de Confiança de Certificados</b>.</li>
+        <li>Ative <b>Mouse Remoto CA</b>.</li>
+      </ol>
+    </details>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">3</span> Abrir o controle</h2>
+    <p class="muted" style="margin-top:0">Feche e abra o navegador de novo antes, para ele reconhecer o certificado.</p>
+    <a class="btn secondary" id="open-app" href="#">Abrir o Mouse Remoto</a>
+    <p class="muted">Depois, no menu do navegador, use <b>Adicionar à tela inicial</b> (ou <b>Instalar app</b>).</p>
+  </section>
+</main>
+<script>
+  // O controle (HTTPS) roda na porta anterior à desta página.
+  const port = Number(location.port || 80) - 1;
+  document.getElementById("open-app").href = `https://${location.hostname}:${port}/`;
+  // Mostra primeiro as instruções do sistema do celular.
+  if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+    document.getElementById("ios").open = true;
+    document.getElementById("android").open = false;
+  }
+</script>
+</body>
+</html>
